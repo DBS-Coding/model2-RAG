@@ -24,7 +24,6 @@ def chat():
 
     return jsonify({
         "karakter": karakter,
-        "prompt": prompt,
         "response": response.text
     })
 
