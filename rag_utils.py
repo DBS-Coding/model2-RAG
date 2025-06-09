@@ -5,33 +5,47 @@ import os
 from google.cloud import aiplatform
 from vertexai.language_models import TextEmbeddingModel
 
+
 PROJECT_ID = "capstonedbs"
 LOCATION = "us-central1"
-BUCKET_NAME = "sejarah" 
+BUCKET_NAME = "sejarah"
 INDEX_FILE_NAME = "faiss.index"
 MAPPING_FILE_NAME = "mapping.txt"
 
 aiplatform.init(project=PROJECT_ID, location=LOCATION)
+
+
 embedding_model = None
 faiss_index = None
 chunks_mapping = {}
 
 def load_faiss_index_and_mapping():
     global faiss_index, chunks_mapping, embedding_model
+
     client = storage.Client()
     bucket = client.bucket(BUCKET_NAME)
 
+    print(f"Mengunduh FAISS index '{INDEX_FILE_NAME}' dari GCS...")
     index_blob = bucket.blob(INDEX_FILE_NAME)
-    index_blob.download_to_filename(INDEX_FILE_NAME)
+    try:
+        index_blob.download_to_filename(INDEX_FILE_NAME)
+    except Exception as e:
+        print(f"Error mengunduh FAISS index: {e}")
+        raise
     faiss_index = faiss.read_index(INDEX_FILE_NAME)
     print(f"FAISS index '{INDEX_FILE_NAME}' berhasil dimuat.")
 
+    print(f"Mengunduh mapping '{MAPPING_FILE_NAME}' dari GCS...")
     mapping_blob = bucket.blob(MAPPING_FILE_NAME)
-    mapping_blob.download_to_filename(MAPPING_FILE_NAME)
+    try:
+        mapping_blob.download_to_filename(MAPPING_FILE_NAME)
+    except Exception as e:
+        print(f"Error mengunduh mapping: {e}")
+        raise
     
     with open(MAPPING_FILE_NAME, "r", encoding="utf-8") as f:
         for line in f:
-            parts = line.strip().split('|', 1) # Split hanya pada '|' pertama
+            parts = line.strip().split('|', 1) 
             if len(parts) == 2:
                 try:
                     idx = int(parts[0])
@@ -46,48 +60,54 @@ def load_faiss_index_and_mapping():
     embedding_model = TextEmbeddingModel.from_pretrained("gemini-embedding-001")
     print("Model embedding 'gemini-embedding-001' berhasil diinisialisasi.")
 
+
 def get_query_embedding(query_text):
-    """Mendapatkan embedding untuk query."""
     global embedding_model
+    
     if embedding_model is None:
+        print("Peringatan: Model embedding belum diinisialisasi, mencoba memuat ulang.")
         embedding_model = TextEmbeddingModel.from_pretrained("gemini-embedding-001")
         print("Model embedding diinisialisasi ulang (query).")
+
     try:
         embedding = embedding_model.get_embeddings([query_text])[0].values
+        print(f"Embedding berhasil dibuat untuk query: '{query_text[:50]}...'")
         return np.array(embedding, dtype=np.float32).reshape(1, -1)
     except Exception as e:
         print(f"Error saat membuat embedding untuk query: '{query_text[:50]}...' - {e}")
         raise
 
+
 def retrieve_context(query_embedding, top_k=3):
-    """Mencari konteks relevan di FAISS index."""
     global faiss_index, chunks_mapping
+
     if faiss_index is None or not chunks_mapping:
+        print("Peringatan: FAISS index atau mapping belum dimuat, mencoba memuat sekarang.")
         load_faiss_index_and_mapping()
 
-    D, I = faiss_index.search(query_embedding, top_k) 
+    D, I = faiss_index.search(query_embedding, top_k) # 
     
     relevant_contexts = []
-    for idx in I[0]:
+    for idx in I[0]: 
         if idx in chunks_mapping:
             relevant_contexts.append(chunks_mapping[idx])
         else:
             print(f"Peringatan: Index {idx} tidak ditemukan di mapping.")
+    print(f"Ditemukan {len(relevant_contexts)} konteks relevan dari FAISS.")
     return "\n\n".join(relevant_contexts) 
 
+
 def get_context_from_gcs(bucket_name_unused, file_name_unused, karakter, question):
-    """
-    Mengambil konteks relevan dari FAISS index berdasarkan pertanyaan.
-    Parameter bucket_name dan file_name tidak lagi digunakan secara langsung
-    untuk mengambil teks dari knowledge.txt, tetapi tetap diterima
-    untuk kompatibilitas dengan main.py.
-    """
     global faiss_index, chunks_mapping
 
+    print("Memulai proses retrieval konteks...")
     if faiss_index is None or not chunks_mapping:
         load_faiss_index_and_mapping()
-
+    
+    print("Mendapatkan embedding untuk pertanyaan...")
     query_embed = get_query_embedding(question)
+
+    print("Melakukan pencarian konteks di FAISS...")
     context = retrieve_context(query_embed, top_k=3) 
 
     if karakter.lower() == "soekarno":
@@ -113,13 +133,17 @@ Berikut adalah konteks sejarah yang relevan:
 Pertanyaan:
 {question}
 """
-
+    print("Konteks berhasil digabungkan ke dalam prompt.")
     return prompt
 
 if __name__ == "__main__":
     print("Menguji rag_utils secara terpisah...")
-    load_faiss_index_and_mapping()
-    test_question = "Siapa itu Soekarno?"
-    final_prompt = get_context_from_gcs("dummy_bucket", "dummy_file", "none", test_question)
-    print("\nPrompt yang dihasilkan untuk LLM:")
-    print(final_prompt)
+    try:
+        load_faiss_index_and_mapping()
+        test_question = "Siapa itu Soekarno?"
+        final_prompt = get_context_from_gcs("dummy_bucket", "dummy_file", "none", test_question)
+        print("\n--- Prompt yang dihasilkan untuk LLM ---")
+        print(final_prompt)
+        print("--- Akhir Uji rag_utils ---")
+    except Exception as e:
+        print(f"Terjadi error saat menguji rag_utils secara terpisah: {e}")
